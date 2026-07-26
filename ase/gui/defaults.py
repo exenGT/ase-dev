@@ -21,6 +21,9 @@ gui_default_settings = {
     'show_unit_cell': True,
     'show_axes': True,
     'show_bonds': False,
+    'show_selected_as_balls': False,
+    'show_bonds_pbc': True,
+    'bond_cutoff': 1.5,
     'shift_cell': False,
     'swap_mouse': False,
 }

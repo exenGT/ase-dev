@@ -78,11 +78,41 @@ class OPLSff:
 
     def read(self, fileobj, comments='#'):
 
-        def read_block(name, symlen, nvalues):
+        # def read_block(name, symlen, nvalues):
+        #     """Read a data block.
+
+        #     name: name of the block to store in self.data
+        #     symlen: length of the symbol
+        #     nvalues: number of values expected
+        #     """
+
+        #     if name not in self.data:
+        #         self.data[name] = {}
+        #     data = self.data[name]
+
+        #     def add_line():
+        #         line = fileobj.readline().strip()
+        #         if not len(line):  # end of the block
+        #             return False
+        #         line = line.split('#')[0]  # get rid of comments
+        #         if len(line) > symlen:
+        #             symbol = line[:symlen]
+        #             words = line[symlen:].split()
+        #             if len(words) >= nvalues:
+        #                 if nvalues == 1:
+        #                     data[symbol] = float(words[0])
+        #                 else:
+        #                     data[symbol] = [float(word)
+        #                                     for word in words[:nvalues]]
+        #         return True
+
+        #     while add_line():
+        #         pass
+
+        def read_block(name, nvalues):
             """Read a data block.
 
             name: name of the block to store in self.data
-            symlen: length of the symbol
             nvalues: number of values expected
             """
 
@@ -95,25 +125,31 @@ class OPLSff:
                 if not len(line):  # end of the block
                     return False
                 line = line.split('#')[0]  # get rid of comments
-                if len(line) > symlen:
-                    symbol = line[:symlen]
-                    words = line[symlen:].split()
-                    if len(words) >= nvalues:
-                        if nvalues == 1:
-                            data[symbol] = float(words[0])
-                        else:
-                            data[symbol] = [float(word)
-                                            for word in words[:nvalues]]
+
+                line_items = line.split()
+                symbol, words = line_items[0], line_items[1:]
+                if len(words) >= nvalues:
+                    if nvalues == 1:
+                        data[symbol] = float(words[0])
+                    else:
+                        data[symbol] = [float(word)
+                                        for word in words[:nvalues]]
                 return True
 
             while add_line():
                 pass
 
-        read_block('one', 2, 3)
-        read_block('bonds', 5, 2)
-        read_block('angles', 8, 2)
-        read_block('dihedrals', 11, 4)
-        read_block('cutoffs', 5, 1)
+        # read_block('one', 2, 3)
+        # read_block('bonds', 5, 2)
+        # read_block('angles', 8, 2)
+        # read_block('dihedrals', 11, 4)
+        # read_block('cutoffs', 5, 1)
+
+        read_block('one', 3)
+        read_block('bonds', 2)
+        read_block('angles', 2)
+        read_block('dihedrals', 4)
+        read_block('cutoffs', 1)
 
         self.bonds = BondData(self.data['bonds'])
         self.angles = AnglesData(self.data['angles'])

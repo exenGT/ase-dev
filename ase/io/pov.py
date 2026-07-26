@@ -122,7 +122,7 @@ class POVRAY:
               'specular 0.7 roughness 0.04 reflection 0.15}'),
         ase3=('finish {ambient 0.4 brilliance 2 diffuse 0.6 metallic '
               'specular 1.0 roughness 0.001 reflection 0.0}'),
-        glass=('finish {ambient 0.4 diffuse 0.35 specular 1.0 '
+        glass=('finish {ambient 0.55 brilliance 2 diffuse 0.45 specular 1.0 '
                'roughness 0.001}'),
         glass2=('finish {ambient 0.3 diffuse 0.3 specular 1.0 '
                 'reflection 0.25 roughness 0.001}'),

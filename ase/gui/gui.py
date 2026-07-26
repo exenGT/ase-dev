@@ -147,6 +147,47 @@ class GUI(View, Status):
     def settings(self):
         return Settings(self)
 
+    # ADD THIS METHOD:
+    def set_bond_cutoff(self, bond_cutoff):
+        """Set a new bond cutoff and refresh the view."""
+        self.bond_cutoff = bond_cutoff
+        self.set_frame()  # This recalculates bonds and redraws
+
+    # ADD THIS METHOD:
+    def set_bond_cutoff_window(self, key=None):
+        """Open a window to set the bond cutoff multiplier."""
+        win = ui.Window(_('Bond Cutoff'), wmtype='utility')
+        
+        # Get the current value to show as default
+        current_bond_cutoff = self.bond_cutoff
+
+        win.add(ui.Label(_('Set bond cutoff (in Angstrom):')))
+        
+        entry = ui.Entry(value=str(current_bond_cutoff), width=10)
+        win.add(entry)
+
+        def ok_callback():
+            try:
+                new_bond_cutoff = float(entry.value)
+                if new_bond_cutoff <= 0:
+                    raise ValueError
+                
+                # Call the controller method
+                self.set_bond_cutoff(new_bond_cutoff) 
+                win.close()
+            except ValueError:
+                ui.error(_('Invalid Input'), _('Please enter a positive number.'))
+
+        # --- THIS IS THE CORRECTED PART ---
+        # Create a new row with OK and Cancel buttons
+        button_row = ui.Row([
+            ui.Button(_('OK'), ok_callback),
+            ui.Button(_('Cancel'), win.close)
+        ])
+        # Add the row of buttons to the window
+        win.add(button_row)
+        # ----------------------------------
+
     def scroll(self, event):
         CTRL = event.modifier == 'ctrl'
 
@@ -210,6 +251,89 @@ class GUI(View, Status):
         if nselected and ui.ask_question(_('Delete atoms'),
                                          _('Delete selected atoms?')):
             self.really_delete_selected_atoms()
+
+    def _selected_mask(self):
+        return self.images.selected[:len(self.atoms)]
+
+    def _float_values(self, entries):
+        return [float(entry.value.replace(',', '.')) for entry in entries]
+
+    def translate_selected_atoms_window(self, key=None):
+        mask = self._selected_mask()
+        if not mask.any():
+            ui.error(_('No atoms selected!'))
+            return
+
+        win = ui.Window(_('Translate selected atoms'), wmtype='utility')
+        entries = [ui.Entry('0.0', width=10) for _ in range(3)]
+        win.add(_('Translation vector:'))
+        win.add(['x', entries[0], 'y', entries[1], 'z', entries[2]])
+
+        def ok():
+            try:
+                vector = np.array(self._float_values(entries))
+            except ValueError:
+                ui.error(_('Invalid Input'),
+                         _('Please enter three numbers for the vector.'))
+                return
+            self.atoms.positions[mask] += vector
+            self.set_frame()
+            win.close()
+
+        win.add([ui.Button(_('OK'), ok), ui.Button(_('Cancel'), win.close)])
+
+    def rotate_selected_atoms_window(self, key=None):
+        mask = self._selected_mask()
+        if not mask.any():
+            ui.error(_('No atoms selected!'))
+            return
+
+        win = ui.Window(_('Rotate selected atoms'), wmtype='utility')
+        axis_entries = [ui.Entry(value, width=10)
+                        for value in ('0.0', '0.0', '1.0')]
+        angle_entry = ui.Entry('0.0', width=10)
+        center_entry = ui.Entry('', width=10)
+        win.add(_('Rotation axis:'))
+        win.add(['x', axis_entries[0], 'y', axis_entries[1],
+                 'z', axis_entries[2]])
+        win.add([_('Angle:'), angle_entry])
+        win.add([_('Center atom index:'), center_entry])
+
+        def ok():
+            try:
+                axis = np.array(self._float_values(axis_entries))
+                angle = float(angle_entry.value.replace(',', '.'))
+            except ValueError:
+                ui.error(_('Invalid Input'),
+                         _('Please enter numbers for the axis and angle.'))
+                return
+
+            if np.linalg.norm(axis) == 0.0:
+                ui.error(_('Invalid Input'),
+                         _('Please enter a non-zero rotation axis.'))
+                return
+
+            atom_index = center_entry.value.strip()
+            if atom_index:
+                try:
+                    atom_index = int(atom_index)
+                except ValueError:
+                    ui.error(_('Invalid atom index'))
+                    return
+                if atom_index < 0 or atom_index > len(self.atoms) - 1:
+                    ui.error(_('Invalid atom index'))
+                    return
+                center = self.atoms.positions[atom_index]
+            else:
+                center = self.atoms.positions[mask].mean(axis=0)
+            atoms = self.atoms[mask]
+            atoms.positions -= center
+            atoms.rotate(angle, axis)
+            self.atoms.positions[mask] = atoms.positions + center
+            self.set_frame()
+            win.close()
+
+        win.add([ui.Button(_('OK'), ok), ui.Button(_('Cancel'), win.close)])
 
     def really_delete_selected_atoms(self):
         mask = self.images.selected[:len(self.atoms)]
@@ -495,12 +619,14 @@ class GUI(View, Status):
               M('---'),
               M(_('Hide selected atoms'), self.hide_selected),
               M(_('Show selected atoms'), self.show_selected),
-              M('---'),
-              M(_('_Modify'), self.modify_atoms, 'Ctrl+Y'),
-              M(_('_Add atoms'), self.add_atoms, 'Ctrl+A'),
-              M(_('_Delete selected atoms'), self.delete_selected_atoms,
-                'Backspace'),
-              M(_('Edit _cell'), self.cell_editor, 'Ctrl+E'),
+               M('---'),
+               M(_('_Modify'), self.modify_atoms, 'Ctrl+Y'),
+               M(_('_Add atoms'), self.add_atoms, 'Ctrl+A'),
+               M(_('Translate'), self.translate_selected_atoms_window),
+               M(_('Rotate'), self.rotate_selected_atoms_window),
+               M(_('_Delete selected atoms'), self.delete_selected_atoms,
+                 'Backspace'),
+               M(_('Edit _cell'), self.cell_editor, 'Ctrl+E'),
               M('---'),
               M(_('_First image'), self.step, 'Home'),
               M(_('_Previous image'), self.step, 'Page-Up'),
@@ -515,6 +641,16 @@ class GUI(View, Status):
                 value=self.config['show_axes']),
               M(_('Show _bonds'), self.toggle_show_bonds, 'Ctrl+B',
                 value=self.config['show_bonds']),
+              M(_('Show selected atoms as balls'),
+                self.toggle_show_selected_as_balls,
+                value=self.config.get('show_selected_as_balls', False)),
+              M(_('Show bonds on boundary'), self.toggle_show_bonds_pbc,
+                value=self.config.get('show_bonds_pbc', True)),
+              M(_('Show _boundary atoms'), self.toggle_show_boundary_atoms,
+                value=self.config.get('show_boundary_atoms', False)),
+              # ADD THIS LINE:
+              M(_('Set bond cutoff ...'), self.set_bond_cutoff_window),
+              #
               M(_('Show _velocities'), self.toggle_show_velocities, 'Ctrl+G',
                 value=False),
               M(_('Show _forces'), self.toggle_show_forces, 'Ctrl+F',

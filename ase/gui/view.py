@@ -1,12 +1,13 @@
 # fmt: off
 
+import itertools
 from math import cos, sin, sqrt
 from os.path import basename
 
 import numpy as np
 
 from ase.calculators.calculator import PropertyNotImplementedError
-from ase.data import atomic_numbers
+from ase.data import atomic_numbers, covalent_radii
 from ase.data.colors import jmol_colors
 from ase.geometry import complete_cell
 from ase.gui.colors import ColorWindow
@@ -56,16 +57,27 @@ def get_cell_coordinates(cell, shifted=False):
     return B1, B2
 
 
-def get_bonds(atoms, covalent_radii):
+def get_bonds(atoms, bond_cutoff, is_pbc_bonds=True):
+    """Find bonds between atoms based on cutoff."""
     from ase.neighborlist import PrimitiveNeighborList
 
+    bond_cutoffs = [0.5 * bond_cutoff for _ in range(len(atoms))]
+
     nl = PrimitiveNeighborList(
-        covalent_radii * 1.5,
+        bond_cutoffs,
         skin=0.0,
         self_interaction=False,
         bothways=False,
     )
+
     nl.update(atoms.pbc, atoms.get_cell(complete=True), atoms.positions)
+
+    if not is_pbc_bonds:
+        for a in range(len(atoms)):
+            mask = np.all(nl.displacements[a] == 0, axis=1)
+            nl.neighbors[a] = nl.neighbors[a][mask]
+            nl.displacements[a] = nl.displacements[a][mask]
+
     number_of_neighbors = sum(indices.size for indices in nl.neighbors)
     number_of_pbc_neighbors = sum(
         offsets.any(axis=1).sum() for offsets in nl.displacements
@@ -90,6 +102,7 @@ def get_bonds(atoms, covalent_radii):
     bonds[n2:, 0] = pbcbonds[:, 1]
     bonds[n2:, 1] = pbcbonds[:, 0]
     bonds[n2:, 2:] = -pbcbonds[:, 2:]
+
     return bonds
 
 
@@ -101,8 +114,6 @@ class View:
         self.configured = False
         self.frame = None
 
-        # XXX
-        self.colormode = 'jmol'
         self.colors = {
             i: ('#{:02X}{:02X}{:02X}'.format(*(int(x * 255) for x in rgb)))
             for i, rgb in enumerate(jmol_colors)
@@ -110,6 +121,8 @@ class View:
         # scaling factors for vectors
         self.force_vector_scale = self.config['force_vector_scale']
         self.velocity_vector_scale = self.config['velocity_vector_scale']
+        # ADD THIS LINE:
+        self.bond_cutoff = self.config.get('bond_cutoff', 1.5)
 
         # buttons
         self.b1 = 1  # left
@@ -153,7 +166,111 @@ class View:
     def get_bonds(self, atoms):
         # this method exists rather than just using the standalone function
         # so that it can be overridden by external libraries
-        return get_bonds(atoms, self.get_covalent_radii(atoms))
+        try:
+            show_pbc = self.window['toggle-show-bonds-pbc']
+        except KeyError:
+            show_pbc = self.config.get('show_bonds_pbc', True)
+        return get_bonds(atoms,
+                         self.bond_cutoff,
+                         is_pbc_bonds=show_pbc)
+
+    # Add this method to the View class
+    def set_bond_cutoff(self, bond_cutoff):
+        """Set a new bond cutoff and refresh the view."""
+        self.bond_cutoff = bond_cutoff
+        self.set_frame()  # This recalculates bonds and redraws
+
+    def show_pbc_bonds(self):
+        try:
+            return self.window['toggle-show-bonds-pbc']
+        except KeyError:
+            return self.config.get('show_bonds_pbc', True)
+
+    def segment_inside_cell(self, atoms, scaled_positions, indices):
+        pbc = np.asarray(atoms.pbc, dtype=bool)
+        if not pbc.any():
+            return True
+
+        tol = 0.001
+        points = scaled_positions[list(indices)][:, pbc]
+        return bool(((points >= -tol) & (points <= 1.0 + tol)).all())
+
+    def pbc_bond_inside_cell(self, atoms, scaled_positions, a, b, offset):
+        pbc = np.asarray(atoms.pbc, dtype=bool)
+        if not pbc.any():
+            return True
+
+        tol = 0.001
+        offset = np.asarray(offset, dtype=float)
+        mida = 0.5 * (scaled_positions[a] + scaled_positions[b] + offset)
+        midb = 0.5 * (scaled_positions[a] + scaled_positions[b] - offset)
+        points = np.array([scaled_positions[a], mida,
+                           scaled_positions[b], midb])[:, pbc]
+        return bool(((points >= -tol) & (points <= 1.0 + tol)).all())
+
+    def get_boundary_bonds(self, atoms, pbc_atoms):
+        from ase.neighborlist import PrimitiveNeighborList
+
+        natoms = len(atoms)
+        positions = np.vstack([atoms.positions, self.ghosts])
+        real_indices = np.arange(len(positions), dtype=int)
+        real_indices[natoms:] = self.ghost_indices
+
+        bond_cutoffs = [0.5 * self.bond_cutoff for _ in range(len(positions))]
+        nl = PrimitiveNeighborList(
+            bond_cutoffs,
+            skin=0.0,
+            self_interaction=False,
+            bothways=False,
+        )
+        cell = complete_cell(atoms.cell)
+        nl.update(np.zeros(3, dtype=bool), cell, positions)
+
+        scaled = np.linalg.solve(cell.T, positions.T).T
+        bonds = []
+        seen = set()
+        for a in range(len(positions)):
+            indices, _offsets = nl.get_neighbors(a)
+            for b in indices:
+                b = int(b)
+                if real_indices[a] == real_indices[b]:
+                    continue
+                if np.linalg.norm(positions[b] - positions[a]) < 1e-12:
+                    continue
+                if not self.segment_inside_cell(atoms, scaled, (a, b)):
+                    continue
+                key = tuple(sorted((a, b)))
+                if key in seen:
+                    continue
+                seen.add(key)
+                bonds.append((int(a), b, 0, 0, 0))
+
+        scaled = atoms.get_scaled_positions(wrap=False)
+        seen_pbc = {
+            (min(a, b), max(a, b), (0, 0, 0))
+            for a, b, *_offset in bonds
+            if a < natoms and b < natoms
+        }
+        for a, b, *offset in self.get_bonds(pbc_atoms):
+            offset = tuple(int(x) for x in offset)
+            if offset == (0, 0, 0):
+                continue
+            a = int(a)
+            b = int(b)
+            scaled_offset = np.asarray(offset) * self.images.repeat
+            if not self.pbc_bond_inside_cell(atoms, scaled, a, b,
+                                             scaled_offset):
+                continue
+            if a <= b:
+                key = (a, b, offset)
+            else:
+                key = (b, a, tuple(-x for x in offset))
+            if key in seen_pbc:
+                continue
+            seen_pbc.add(key)
+            bonds.append((a, b, *offset))
+
+        return np.array(bonds, int).reshape((-1, 5))
 
     def set_atoms(self, atoms):
         natoms = len(atoms)
@@ -164,10 +281,49 @@ class View:
         else:
             B1 = B2 = np.zeros((0, 3))
 
+        self.ghosts = np.zeros((0, 3))
+        self.ghost_indices = np.array([], dtype=int)
+
+        if self.config.get('show_boundary_atoms', False) and atoms.pbc.any():
+            scaled = atoms.get_scaled_positions(wrap=False)
+            indices = []
+            offsets = []
+            tol = 0.001
+
+            for i in range(natoms):
+                boundary_dirs = {}
+                for c in range(3):
+                    if atoms.pbc[c]:
+                        if -tol < scaled[i, c] < tol:
+                            boundary_dirs[c] = 1
+                        elif 1.0 - tol < scaled[i, c] < 1.0 + tol:
+                            boundary_dirs[c] = -1
+                axes = list(boundary_dirs.keys())
+
+                if axes:
+                    for L in range(1, len(axes) + 1):
+                        for subset in itertools.combinations(axes, L):
+                            offset = np.zeros(3)
+                            for c in subset:
+                                offset[c] = boundary_dirs[c]
+                            indices.append(i)
+                            offsets.append(offset)
+
+            if indices:
+                self.ghost_indices = np.array(indices, dtype=int)
+                offsets = np.array(offsets)
+                self.ghosts = (atoms.positions[self.ghost_indices] +
+                               offsets @ atoms.cell)
+
+        nghosts = len(self.ghosts)
+
         if self.showing_bonds():
             atomscopy = atoms.copy()
             atomscopy.cell *= self.images.repeat[:, np.newaxis]
-            bonds = self.get_bonds(atomscopy)
+            if nghosts > 0 and self.show_pbc_bonds():
+                bonds = self.get_boundary_bonds(atoms, atomscopy)
+            else:
+                bonds = self.get_bonds(atomscopy)
         else:
             bonds = np.empty((0, 5), int)
 
@@ -178,11 +334,15 @@ class View:
 
         # Also B are the end points of line segments.
 
-        self.X = np.empty((natoms + len(B1) + len(bonds), 3))
+        self.X = np.empty((natoms + nghosts + len(B1) + len(bonds), 3))
         self.X_pos = self.X[:natoms]
         self.X_pos[:] = atoms.positions
-        self.X_cell = self.X[natoms:natoms + len(B1)]
-        self.X_bonds = self.X[natoms + len(B1):]
+
+        if nghosts > 0:
+            self.X[natoms:natoms + nghosts] = self.ghosts
+
+        self.X_cell = self.X[natoms + nghosts:natoms + nghosts + len(B1)]
+        self.X_bonds = self.X[natoms + nghosts + len(B1):]
 
         cell = atoms.cell
         ncellparts = len(B1)
@@ -193,12 +353,14 @@ class View:
         self.B[:ncellparts] = np.dot(B2, cell)
 
         if nbonds > 0:
-            P = atoms.positions
+            P = self.X[:natoms + nghosts]
             Af = self.images.repeat[:, np.newaxis] * cell
             a = P[bonds[:, 0]]
             b = P[bonds[:, 1]] + np.dot(bonds[:, 2:], Af) - a
             d = (b**2).sum(1)**0.5
-            r = 0.65 * self.get_covalent_radii()
+            r = self.get_draw_radii()
+            if nghosts > 0:
+                r = np.concatenate([r, r[self.ghost_indices]])
             x0 = (r[bonds[:, 0]] / d).reshape((-1, 1))
             x1 = (r[bonds[:, 1]] / d).reshape((-1, 1))
             self.X_bonds[:] = a + b * x0
@@ -208,6 +370,24 @@ class View:
 
     def showing_bonds(self):
         return self.window['toggle-show-bonds']
+
+    def showing_selected_as_balls(self):
+        try:
+            return self.window['toggle-show-selected-as-balls']
+        except KeyError:
+            return self.config.get('show_selected_as_balls', False)
+
+    def get_draw_radii(self):
+        """Return atom radii, including the current mixed display style."""
+        radii = self.get_covalent_radii()
+        if not self.showing_bonds():
+            return radii
+
+        radii = 0.65 * radii
+        if self.showing_selected_as_balls():
+            selected = self.images.selected[:len(self.atoms)]
+            radii[selected] = self.get_covalent_radii()[selected]
+        return radii
 
     def showing_cell(self):
         return self.window['toggle-show-unit-cell']
@@ -237,6 +417,17 @@ class View:
         self.draw()
 
     def toggle_show_bonds(self, key=None):
+        self.set_frame()
+
+    def toggle_show_bonds_pbc(self, key=None):
+        self.set_frame()
+
+    def toggle_show_selected_as_balls(self, key=None):
+        self.set_frame()
+
+    def toggle_show_boundary_atoms(self, key=None):
+        self.config['show_boundary_atoms'] = not self.config.get(
+            'show_boundary_atoms', False)
         self.set_frame()
 
     def toggle_show_velocities(self, key=None):
@@ -410,15 +601,18 @@ class View:
         offset[:2] -= 0.5 * self.window.size
         X = np.dot(self.X, axes) - offset
         n = len(self.atoms)
+        nghosts = len(self.ghost_indices) if hasattr(self, 'ghost_indices') else 0
 
         # The indices enumerate drawable objects in z order:
         self.indices = X[:, 2].argsort()
-        r = self.get_covalent_radii() * self.scale
-        if self.window['toggle-show-bonds']:
-            r *= 0.65
-        P = self.P = X[:n, :2]
+        r = self.get_draw_radii() * self.scale
+
+        if nghosts > 0:
+            r = np.concatenate([r, r[self.ghost_indices]])
+
+        P = self.P = X[:n + nghosts, :2]
         A = (P - r[:, None]).round().astype(int)
-        X1 = X[n:, :2].round().astype(int)
+        X1 = X[n + nghosts:, :2].round().astype(int)
         X2 = (np.dot(self.B, axes) - offset).round().astype(int)
         disp = (np.dot(self.atoms.get_celldisp().reshape((3,)),
                        axes)).round().astype(int)
@@ -456,16 +650,21 @@ class View:
             movecolor = PURPLE
 
         for a in self.indices:
-            if a < n:
+            if a < n + nghosts:
+                if a < n:
+                    real_a = a
+                else:
+                    real_a = self.ghost_indices[a - n]
+
                 ra = d[a]
-                if visible[a]:
+                if visible[real_a]:
                     try:
                         kinds = self.atoms.arrays['spacegroup_kinds']
-                        site_occ = self.atoms.info['occupancy'][str(kinds[a])]
+                        site_occ = self.atoms.info['occupancy'][str(kinds[real_a])]
                         # first an empty circle if a site is not fully occupied
                         if (np.sum([v for v in site_occ.values()])) < 1.0:
                             fill = '#ffffff'
-                            circle(fill, selected[a],
+                            circle(fill, selected[real_a],
                                    A[a, 0], A[a, 1],
                                    A[a, 0] + ra, A[a, 1] + ra)
                         start = 0
@@ -474,14 +673,14 @@ class View:
                                                key=lambda x: x[1],
                                                reverse=True):
                             if np.round(occ, decimals=4) == 1.0:
-                                circle(colors[a], selected[a],
+                                circle(colors[real_a], selected[real_a],
                                        A[a, 0], A[a, 1],
                                        A[a, 0] + ra, A[a, 1] + ra)
                             else:
                                 # jmol colors for the moment
                                 extent = 360. * occ
                                 arc(self.colors[atomic_numbers[sym]],
-                                    selected[a],
+                                    selected[real_a],
                                     start, extent,
                                     A[a, 0], A[a, 1],
                                     A[a, 0] + ra, A[a, 1] + ra)
@@ -489,23 +688,23 @@ class View:
                     except KeyError:
                         # legacy behavior
                         # Draw the atoms
-                        if (self.moving and a < len(self.move_atoms_mask)
-                                and self.move_atoms_mask[a]):
+                        if (self.moving and real_a < len(self.move_atoms_mask)
+                                and self.move_atoms_mask[real_a]):
                             circle(movecolor, False,
                                    A[a, 0] - 4, A[a, 1] - 4,
                                    A[a, 0] + ra + 4, A[a, 1] + ra + 4)
 
-                        circle(colors[a], selected[a],
+                        circle(colors[real_a], selected[real_a],
                                A[a, 0], A[a, 1], A[a, 0] + ra, A[a, 1] + ra)
 
                     # Draw labels on the atoms
                     if self.labels is not None:
                         self.window.text(A[a, 0] + ra / 2,
                                          A[a, 1] + ra / 2,
-                                         str(self.labels[a]))
+                                         str(self.labels[real_a]))
 
                     # Draw cross on constrained atoms
-                    if constrained[a]:
+                    if constrained[real_a]:
                         R1 = int(0.14644 * ra)
                         R2 = int(0.85355 * ra)
                         line((A[a, 0] + R1, A[a, 1] + R1,
@@ -514,13 +713,14 @@ class View:
                               A[a, 0] + R1, A[a, 1] + R2))
 
                     # Draw velocities and/or forces
-                    for v in vector_arrays:
-                        assert not np.isnan(v).any()
-                        self.arrow((X[a, 0], X[a, 1], v[a, 0], v[a, 1]),
-                                   width=2)
+                    if a < n:
+                        for v in vector_arrays:
+                            assert not np.isnan(v).any()
+                            self.arrow((X[a, 0], X[a, 1], v[a, 0], v[a, 1]),
+                                       width=2)
             else:
                 # Draw unit cell and/or bonds:
-                a -= n
+                a -= (n + nghosts)
                 if a < ncell:
                     line((X1[a, 0] + disp[0], X1[a, 1] + disp[1],
                           X2[a, 0] + disp[0], X2[a, 1] + disp[1]))

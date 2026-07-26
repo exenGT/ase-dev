@@ -1,18 +1,19 @@
 # fmt: off
 
 from os import unlink
+import re
 
 import numpy as np
 
 import ase.gui.ui as ui
 from ase.gui.i18n import _
-from ase.io.pov import get_bondpairs, write_pov
+from ase.io.pov import write_pov
 
 pack = error = Help = 42
 
 
 class Render:
-    texture_list = ['ase2', 'ase3', 'glass', 'simple', 'pale',
+    texture_list = ['ase2', 'ase3', 'glass', 'glass2', 'simple', 'pale',
                     'intermediate', 'vmd', 'jmol']
     cameras = ['orthographic', 'perspective', 'ultra_wide_angle']
 
@@ -79,6 +80,33 @@ class Render:
         win = self.gui.window.win
         return win.winfo_width(), win.winfo_height()
 
+    def get_render_atoms(self, atoms):
+        """Return atoms augmented with GUI-only boundary atoms, if shown."""
+        ghost_indices = getattr(self.gui, 'ghost_indices',
+                                np.array([], dtype=int))
+        ghost_positions = getattr(self.gui, 'ghosts',
+                                  np.empty((0, 3), dtype=float))
+
+        if (not self.gui.config.get('show_boundary_atoms', False) or
+                len(ghost_indices) == 0):
+            return atoms, np.array([], dtype=int)
+
+        render_atoms = atoms.copy()
+        ghost_atoms = atoms[ghost_indices]
+        ghost_atoms.set_positions(ghost_positions)
+        render_atoms.extend(ghost_atoms)
+        return render_atoms, ghost_indices
+
+    def get_render_bondatoms(self, atoms, ghost_indices):
+        atomscopy = atoms.copy()
+        atomscopy.cell *= self.gui.images.repeat[:, np.newaxis]
+        if len(ghost_indices) > 0 and self.gui.show_pbc_bonds():
+            bonds = self.gui.get_boundary_bonds(atoms, atomscopy)
+        else:
+            bonds = self.gui.get_bonds(atomscopy)
+        return [(int(a), int(b), tuple(offset))
+                for a, b, *offset in bonds]
+
     def ok(self, *args):
         print("Rendering with povray:")
         _guiwidth, guiheight = self.get_guisize()
@@ -117,35 +145,67 @@ class Render:
             frames = [self.gui.frame]
 
         initial_frame = self.gui.frame
+        
         for frame in frames:
             self.gui.set_frame(frame)
-            povray_settings['textures'] = self.get_textures()
-            povray_settings['colors'] = self.gui.get_colors(rgb=True)
             atoms = self.gui.images.get_atoms(frame)
+            render_atoms, ghost_indices = self.get_render_atoms(atoms)
+
+            textures = self.get_textures()
+            colors = self.gui.get_colors(rgb=True)
+            radii = self.gui.get_covalent_radii()
+
+            if len(ghost_indices) > 0:
+                textures += [textures[i] for i in ghost_indices]
+                colors += [colors[i] for i in ghost_indices]
+                radii = np.concatenate([radii, radii[ghost_indices]])
+
+            povray_settings['textures'] = textures
+            povray_settings['colors'] = colors
             radii_scale = 1  # atom size multiplier
-            # self.gui.config['show_bonds'] is always False
+            povray_settings['bondatoms'] = []
+
             if self.gui.window['toggle-show-bonds']:
                 print(" | Building bonds")
-                povray_settings['bondatoms'] = get_bondpairs(atoms)
+                povray_settings['bondatoms'] = self.get_render_bondatoms(
+                    atoms, ghost_indices)
                 radii_scale = 0.65  # value from draw method of View class
+
             filename = self.update_outputname()
             print(" | Writing files for image", filename, "...")
-            plotting_var_settings['radii'] = radii_scale * \
-                self.gui.get_covalent_radii()
+            plotting_var_settings['radii'] = radii_scale * radii
+
             renderer = write_pov(
-                filename, atoms,
+                filename, render_atoms,
                 povray_settings=povray_settings,
                 **plotting_var_settings)
+
+            # Fix float Width/Height in the generated .ini file
+            # ASE sometimes calculates canvas_height as a float, which crashes POV-Ray
+            ini_filename = filename[:-4] + '.ini'
+            try:
+                with open(ini_filename, 'r') as f:
+                    ini_content = f.read()
+                ini_content = re.sub(r'^(Width|Height)=([0-9.]+)$',
+                                     lambda m: f"{m.group(1)}={int(float(m.group(2)))}",
+                                     ini_content, flags=re.MULTILINE)
+                with open(ini_filename, 'w') as f:
+                    f.write(ini_content)
+            except Exception:
+                pass
+
             if self.run_povray_widget.value:
                 renderer.render(
                     povray_executable=self.povray_executable.value,
                     clean_up=False)
+
             if not self.keep_files_widget.value:
                 print(" | Deleting temporary file ", filename)
                 unlink(filename)
                 filename = filename[:-4] + '.ini'
                 print(" | Deleting temporary file ", filename)
                 unlink(filename)
+
         self.gui.set_frame(initial_frame)
         self.update_outputname()
 

@@ -194,7 +194,7 @@ class IncompatibleCellError(ValueError):
 
 def stack(atoms1, atoms2, axis=2, cell=None, fix=0.5,
           maxstrain=0.5, distance=None, reorder=False,
-          output_strained=False):
+          output_strained=False, add_interface_atoms=True):
     """Return a new Atoms instance with *atoms2* stacked on top of
     *atoms1* along the given axis. Periodicity in all directions is
     ensured.
@@ -270,12 +270,14 @@ def stack(atoms1, atoms2, axis=2, cell=None, fix=0.5,
 
     c1 = np.linalg.norm(atoms1.cell[axis])
     c2 = np.linalg.norm(atoms2.cell[axis])
+
     if cell is None:
         cell1 = atoms1.cell.copy()
         cell2 = atoms2.cell.copy()
         cell1[axis] /= c1
         cell2[axis] /= c2
         cell = cell1 + fix * (cell2 - cell1)
+
     cell[axis] /= np.linalg.norm(cell[axis])
     cell1 = cell.copy()
     cell2 = cell.copy()
@@ -327,6 +329,27 @@ def stack(atoms1, atoms2, axis=2, cell=None, fix=0.5,
     atoms2.translate(atoms1.cell[axis])
     atoms1.cell[axis] += atoms2.cell[axis]
     atoms1.extend(atoms2)
+
+    # === New block for grain boundary fix ===
+    if add_interface_atoms:
+        # Get fractional coordinates of all atoms in atoms1
+        scaled = atoms1.get_scaled_positions(wrap=True)
+
+        # Select atoms close to the interface plane (z=0 if axis=2)
+        mask = np.abs(scaled[:, axis]) < 3e-2
+        interface_atoms = atoms1[mask]
+
+        # Duplicate those atoms
+        new_atoms = interface_atoms.copy()
+
+        # Shift them to the mid-plane (z=0.5)
+        scaled_new = new_atoms.get_scaled_positions()
+        scaled_new[:, axis] = 0.5
+        new_atoms.set_scaled_positions(scaled_new)
+
+        # Add them to the system
+        atoms1.extend(new_atoms)
+    # ========================================
 
     if reorder:
         atoms1 = sort(atoms1)
