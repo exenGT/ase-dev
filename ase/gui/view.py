@@ -121,8 +121,10 @@ class View:
         # scaling factors for vectors
         self.force_vector_scale = self.config['force_vector_scale']
         self.velocity_vector_scale = self.config['velocity_vector_scale']
+        self.drawing_style = self.config.get('drawing_style', 'ball')
         # ADD THIS LINE:
         self.bond_cutoff = self.config.get('bond_cutoff', 1.5)
+        self.emphasize_selected_atoms = self.config.get('emphasize_selected_atoms', False)
 
         # buttons
         self.b1 = 1  # left
@@ -369,25 +371,40 @@ class View:
             self.B[ncellparts:] = self.X_bonds + b
 
     def showing_bonds(self):
-        return self.window['toggle-show-bonds']
+        # In emphasis mode with selected atoms, always show bonds
+        if self.emphasize_selected_atoms:
+            natoms = len(self.atoms)
+            if self.images.selected[:natoms].any():
+                return True
+        return self.drawing_style in {'ball-and-stick', 'stick'}
 
-    def showing_selected_as_balls(self):
-        try:
-            return self.window['toggle-show-selected-as-balls']
-        except KeyError:
-            return self.config.get('show_selected_as_balls', False)
+    def get_bond_radius(self):
+        return 0.15
 
-    def get_draw_radii(self):
-        """Return atom radii, including the current mixed display style."""
-        radii = self.get_covalent_radii()
-        if not self.showing_bonds():
-            return radii
-
-        radii = 0.65 * radii
-        if self.showing_selected_as_balls():
-            selected = self.images.selected[:len(self.atoms)]
-            radii[selected] = self.get_covalent_radii()[selected]
-        return radii
+    def get_draw_radii(self, atoms=None):
+        """Return atom radii for the selected drawing style.
+        
+        In emphasis mode with selected atoms:
+        - selected atoms use covalent radii (ball-and-stick style)
+        - background atoms use bond radius (stick style)
+        """
+        if atoms is None:
+            atoms = self.atoms
+        
+        # Handle emphasis mode
+        if self.emphasize_selected_atoms:
+            natoms = len(atoms)
+            selected = self.images.selected[:natoms]
+            if selected.any():
+                # Per-atom radii: covalent for selected, bond radius for background
+                radii = np.full(len(atoms), self.get_bond_radius(), dtype=float)
+                radii[selected] = self.get_covalent_radii(atoms)[selected]
+                return radii
+        
+        # Normal mode
+        if self.drawing_style == 'stick':
+            return np.full(len(atoms), self.get_bond_radius())
+        return self.get_covalent_radii(atoms)
 
     def showing_cell(self):
         return self.window['toggle-show-unit-cell']
@@ -417,12 +434,38 @@ class View:
         self.draw()
 
     def toggle_show_bonds(self, key=None):
+        self.drawing_style = ('ball-and-stick'
+                              if self.window['toggle-show-bonds'] else 'ball')
+        self.config['drawing_style'] = self.drawing_style
+        self.update_drawing_style_menu()
+        self.set_frame()
+
+    def update_drawing_style_menu(self):
+        try:
+            self.window['set-drawing-style'] = [
+                'ball', 'ball-and-stick', 'stick'].index(self.drawing_style)
+        except KeyError:
+            pass
+        try:
+            self.window['toggle-show-bonds'] = self.showing_bonds()
+        except KeyError:
+            pass
+
+    def set_drawing_style(self, key=None):
+        styles = ['ball', 'ball-and-stick', 'stick']
+        self.drawing_style = styles[self.window['set-drawing-style']]
+        self.config['drawing_style'] = self.drawing_style
+        self.update_drawing_style_menu()
+        self.set_frame()
+
+    def toggle_emphasize_selected_atoms(self, key=None):
+        """Toggle the emphasis mode for selected atoms."""
+        self.emphasize_selected_atoms = not self.emphasize_selected_atoms
+        self.config['emphasize_selected_atoms'] = self.emphasize_selected_atoms
+        self.update_drawing_style_menu()
         self.set_frame()
 
     def toggle_show_bonds_pbc(self, key=None):
-        self.set_frame()
-
-    def toggle_show_selected_as_balls(self, key=None):
         self.set_frame()
 
     def toggle_show_boundary_atoms(self, key=None):
@@ -476,7 +519,7 @@ class View:
         # including the covalent_radii used for drawing the atoms
         P = np.dot(self.X, self.axes)
         n = len(self.atoms)
-        covalent_radii = self.get_covalent_radii()
+        covalent_radii = self.get_draw_radii()
         P[:n] -= covalent_radii[:, None]
         P1 = P.min(0)
         P[:n] += 2 * covalent_radii[:, None]
@@ -640,7 +683,7 @@ class View:
         selected = self.images.selected
         visible = self.images.visible
         ncell = len(self.X_cell)
-        bond_linewidth = self.scale * 0.15
+        bond_linewidth = self.scale * 2 * self.get_bond_radius()
 
         self.update_labels()
 
@@ -789,7 +832,7 @@ class View:
 
         if event.time < self.t0 + 200:  # 200 ms
             d = self.P - self.xy
-            r = self.get_covalent_radii()
+            r = self.get_draw_radii()
             hit = np.less((d**2).sum(1), (self.scale * r)**2)
             for a in self.indices[::-1]:
                 if a < len(self.atoms) and hit[a]:

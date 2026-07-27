@@ -41,6 +41,12 @@ class GUI(View, Status):
         self.config = read_defaults()
         if show_bonds:
             self.config['show_bonds'] = True
+            self.config['drawing_style'] = 'ball-and-stick'
+        elif self.config.get('drawing_style', 'ball') in {'ball-and-stick',
+                                                          'stick'}:
+            self.config['show_bonds'] = True
+        elif self.config.get('show_bonds', False):
+            self.config['drawing_style'] = 'ball-and-stick'
 
         menu = self.get_menu_data()
 
@@ -187,6 +193,10 @@ class GUI(View, Status):
         # Add the row of buttons to the window
         win.add(button_row)
         # ----------------------------------
+
+    def get_drawing_style_index(self):
+        styles = ['ball', 'ball-and-stick', 'stick']
+        return styles.index(self.config.get('drawing_style', 'ball'))
 
     def scroll(self, event):
         CTRL = event.modifier == 'ctrl'
@@ -641,9 +651,11 @@ class GUI(View, Status):
                 value=self.config['show_axes']),
               M(_('Show _bonds'), self.toggle_show_bonds, 'Ctrl+B',
                 value=self.config['show_bonds']),
-              M(_('Show selected atoms as balls'),
-                self.toggle_show_selected_as_balls,
-                value=self.config.get('show_selected_as_balls', False)),
+              M(_('Drawing style'), self.set_drawing_style,
+                choices=[_('Ball'), _('Ball-and-stick'), _('Stick')],
+                value=self.get_drawing_style_index()),
+              M(_('Emphasize selected atoms'), self.toggle_emphasize_selected_atoms,
+                value=self.config.get('emphasize_selected_atoms', False)),
               M(_('Show bonds on boundary'), self.toggle_show_bonds_pbc,
                 value=self.config.get('show_bonds_pbc', True)),
               M(_('Show _boundary atoms'), self.toggle_show_boundary_atoms,

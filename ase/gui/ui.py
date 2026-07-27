@@ -456,7 +456,7 @@ class MenuItem:
         callback = self.callback
         if self.label == '---':
             menu.add_separator()
-        elif self.value is not None:
+        elif self.value is not None and self.choices is None:
             var = tk.BooleanVar(value=self.value)
             stuff[self.callback.__name__.replace('_', '-')] = var
 
@@ -474,7 +474,7 @@ class MenuItem:
             submenu = tk.Menu(menu)
             menu.add_cascade(label=self.label, menu=submenu)
             var = tk.IntVar()
-            var.set(0)
+            var.set(0 if self.value is None else self.value)
             stuff[self.callback.__name__.replace('_', '-')] = var
             for i, choice in enumerate(self.choices):
                 submenu.add_radiobutton(label=choice.replace('_', ''),

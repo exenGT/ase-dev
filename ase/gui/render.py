@@ -14,7 +14,7 @@ pack = error = Help = 42
 
 class Render:
     texture_list = ['ase2', 'ase3', 'glass', 'glass2', 'simple', 'pale',
-                    'intermediate', 'vmd', 'jmol']
+                    'intermediate', 'vmd', 'jmol', 'matte']
     cameras = ['orthographic', 'perspective', 'ultra_wide_angle']
 
     def __init__(self, gui):
@@ -132,6 +132,7 @@ class Render:
             'camera_dist': self.camera_distance_widget.value,
             'canvas_width': width,
             'celllinewidth': self.linewidth_widget.value,
+            'bondlinewidth': self.gui.get_bond_radius(),
             'exportconstraints': self.constraints_widget.value,
         }
 
@@ -153,7 +154,7 @@ class Render:
 
             textures = self.get_textures()
             colors = self.gui.get_colors(rgb=True)
-            radii = self.gui.get_covalent_radii()
+            radii = self.gui.get_draw_radii()
 
             if len(ghost_indices) > 0:
                 textures += [textures[i] for i in ghost_indices]
@@ -164,12 +165,30 @@ class Render:
             povray_settings['colors'] = colors
             radii_scale = 1  # atom size multiplier
             povray_settings['bondatoms'] = []
+            
+            # Handle emphasis mode with per-atom transparency
+            if self.gui.emphasize_selected_atoms:
+                natoms = len(atoms)
+                selected = self.gui.images.selected[:natoms]
+                if selected.any():
+                    # Build per-atom transparency list
+                    # Selected atoms opaque (0.0), background atoms semi-transparent (0.7)
+                    transmittances = np.full(len(render_atoms), 0.7, dtype=float)
+                    transmittances[:natoms][selected] = 0.0
+                    # Remove specular highlights from selected atoms
+                    for i in range(len(render_atoms)):
+                        if i not in np.flatnonzero(selected):
+                            textures[i] = 'matte'
+                    # Ghost atoms (background) remain semi-transparent (already 0.7)
+                    povray_settings['transmittances'] = transmittances.tolist()
+                    print(" | Applying 70% transparency to background atoms")
 
-            if self.gui.window['toggle-show-bonds']:
+            povray_settings['textures'] = textures
+
+            if self.gui.showing_bonds():
                 print(" | Building bonds")
                 povray_settings['bondatoms'] = self.get_render_bondatoms(
                     atoms, ghost_indices)
-                radii_scale = 0.65  # value from draw method of View class
 
             filename = self.update_outputname()
             print(" | Writing files for image", filename, "...")
