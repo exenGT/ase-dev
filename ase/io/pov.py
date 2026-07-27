@@ -126,7 +126,8 @@ class POVRAY:
                'roughness 0.001}'),
         glass2=('finish {ambient 0.3 diffuse 0.3 specular 1.0 '
                 'reflection 0.25 roughness 0.001}'),
-        matte=('finish {ambient 0.4 diffuse 0.6 specular 0}')
+        matte=('finish {ambient 0.4 diffuse 0.6 specular 0}'),
+        faded=('finish {ambient 0.85 diffuse 0.18 specular 0 roughness 1}')
     )
 
     # These styles were made when assumed_gamma was 1.0 which gives poor color

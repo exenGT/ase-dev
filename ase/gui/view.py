@@ -125,6 +125,10 @@ class View:
         # ADD THIS LINE:
         self.bond_cutoff = self.config.get('bond_cutoff', 1.5)
         self.emphasize_selected_atoms = self.config.get('emphasize_selected_atoms', False)
+        self.emphasize_unselected_as_sticks = self.config.get(
+            'emphasize_unselected_as_sticks', False)
+        self.emphasize_lighten_factor = self.config.get(
+            'emphasize_lighten_factor', 0.7)
 
         # buttons
         self.b1 = 1  # left
@@ -371,12 +375,15 @@ class View:
             self.B[ncellparts:] = self.X_bonds + b
 
     def showing_bonds(self):
-        # In emphasis mode with selected atoms, always show bonds
-        if self.emphasize_selected_atoms:
+        if self.drawing_style in {'ball-and-stick', 'stick'}:
+            return True
+
+        if (self.emphasize_selected_atoms and
+                self.emphasize_unselected_as_sticks):
             natoms = len(self.atoms)
             if self.images.selected[:natoms].any():
                 return True
-        return self.drawing_style in {'ball-and-stick', 'stick'}
+        return False
 
     def get_bond_radius(self):
         return 0.15
@@ -385,26 +392,26 @@ class View:
         """Return atom radii for the selected drawing style.
         
         In emphasis mode with selected atoms:
-        - selected atoms use covalent radii (ball-and-stick style)
-        - background atoms use bond radius (stick style)
+        - selected atoms keep the selected drawing style
+        - background atoms optionally use bond radius (stick style)
         """
         if atoms is None:
             atoms = self.atoms
+
+        if self.drawing_style == 'stick':
+            radii = np.full(len(atoms), self.get_bond_radius())
+        else:
+            radii = self.get_covalent_radii(atoms)
         
-        # Handle emphasis mode
-        if self.emphasize_selected_atoms:
+        if (self.emphasize_selected_atoms and
+                self.emphasize_unselected_as_sticks):
             natoms = len(atoms)
             selected = self.images.selected[:natoms]
             if selected.any():
-                # Per-atom radii: covalent for selected, bond radius for background
-                radii = np.full(len(atoms), self.get_bond_radius(), dtype=float)
-                radii[selected] = self.get_covalent_radii(atoms)[selected]
-                return radii
-        
-        # Normal mode
-        if self.drawing_style == 'stick':
-            return np.full(len(atoms), self.get_bond_radius())
-        return self.get_covalent_radii(atoms)
+                radii = radii.copy()
+                radii[~selected] = self.get_bond_radius()
+
+        return radii
 
     def showing_cell(self):
         return self.window['toggle-show-unit-cell']
@@ -462,6 +469,9 @@ class View:
         """Toggle the emphasis mode for selected atoms."""
         self.emphasize_selected_atoms = not self.emphasize_selected_atoms
         self.config['emphasize_selected_atoms'] = self.emphasize_selected_atoms
+        self.config['emphasize_unselected_as_sticks'] = (
+            self.emphasize_unselected_as_sticks)
+        self.config['emphasize_lighten_factor'] = self.emphasize_lighten_factor
         self.update_drawing_style_menu()
         self.set_frame()
 
@@ -608,6 +618,27 @@ class View:
                               0, N - 1).filled(N)
         return [colorswhite[i] for i in indices]
 
+    def lighten_hex_color(self, color, factor):
+        rgb = [int(color[i:i + 2], 16) / 255 for i in range(1, 7, 2)]
+        rgb = [c + factor * (1.0 - c) for c in rgb]
+        return '#{:02X}{:02X}{:02X}'.format(
+            *(round(255 * c) for c in rgb))
+
+    def should_lighten_atom(self, index):
+        if not self.emphasize_selected_atoms:
+            return False
+        selected = self.images.selected[:len(self.atoms)]
+        return selected.any() and not selected[index]
+
+    def get_emphasized_color(self, color, index):
+        if self.should_lighten_atom(index):
+            return self.lighten_hex_color(color, self.emphasize_lighten_factor)
+        return color
+
+    def get_emphasized_colors(self, colors):
+        return [self.get_emphasized_color(color, index)
+                for index, color in enumerate(colors)]
+
     def get_color_scalars(self, frame=None):
         if self.colormode == 'tag':
             return self.atoms.get_tags()
@@ -674,7 +705,7 @@ class View:
         for array in vector_arrays:
             array[:] = np.dot(array, axes) + X[:n]
 
-        colors = self.get_colors()
+        colors = self.get_emphasized_colors(self.get_colors())
         circle = self.window.circle
         arc = self.window.arc
         line = self.window.line
@@ -722,7 +753,8 @@ class View:
                             else:
                                 # jmol colors for the moment
                                 extent = 360. * occ
-                                arc(self.colors[atomic_numbers[sym]],
+                                arc(self.get_emphasized_color(
+                                    self.colors[atomic_numbers[sym]], real_a),
                                     selected[real_a],
                                     start, extent,
                                     A[a, 0], A[a, 1],

@@ -171,17 +171,29 @@ class Render:
                 natoms = len(atoms)
                 selected = self.gui.images.selected[:natoms]
                 if selected.any():
-                    # Build per-atom transparency list
-                    # Selected atoms opaque (0.0), background atoms semi-transparent (0.7)
-                    transmittances = np.full(len(render_atoms), 0.7, dtype=float)
-                    transmittances[:natoms][selected] = 0.0
-                    # Remove specular highlights from selected atoms
-                    for i in range(len(render_atoms)):
-                        if i not in np.flatnonzero(selected):
-                            textures[i] = 'matte'
-                    # Ghost atoms (background) remain semi-transparent (already 0.7)
+                    # Keep all atoms opaque.  Deemphasize background atoms with
+                    # pale colors and a low-contrast material instead of real
+                    # transparency; this avoids visible sphere/cylinder
+                    # intersections in POV-Ray output while making even white
+                    # atoms visually recede.
+                    render_selected = np.zeros(len(render_atoms), dtype=bool)
+                    render_selected[:natoms] = selected
+                    if len(ghost_indices) > 0:
+                        render_selected[natoms:] = selected[ghost_indices]
+
+                    colors = np.asarray(colors, dtype=float)
+                    colors[~render_selected] = self.lighten_colors(
+                        colors[~render_selected],
+                        self.gui.emphasize_lighten_factor)
+
+                    textures = np.array(textures)
+                    textures[~render_selected] = 'faded'
+                    povray_settings['colors'] = colors.tolist()
+
+                    transmittances = np.zeros(len(render_atoms), dtype=float)
                     povray_settings['transmittances'] = transmittances.tolist()
-                    print(" | Applying 70% transparency to background atoms")
+                    
+                    print(" | Fading background atoms")
 
             povray_settings['textures'] = textures
 
@@ -261,3 +273,12 @@ class Render:
         #            if val:
         #                textures[n] = t
         # return textures
+
+    def lighten_colors(self, colors, factor=0.7):
+        """Return colors lightened toward white.
+
+        ``factor`` controls how far colors are moved toward white:
+        0.0 leaves colors unchanged, while 1.0 gives white.
+        """
+        colors = np.asarray(colors, dtype=float)
+        return colors + factor * (1.0 - colors)

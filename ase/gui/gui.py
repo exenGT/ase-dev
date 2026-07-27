@@ -654,8 +654,8 @@ class GUI(View, Status):
               M(_('Drawing style'), self.set_drawing_style,
                 choices=[_('Ball'), _('Ball-and-stick'), _('Stick')],
                 value=self.get_drawing_style_index()),
-              M(_('Emphasize selected atoms'), self.toggle_emphasize_selected_atoms,
-                value=self.config.get('emphasize_selected_atoms', False)),
+              M(_('Emphasize selected atoms ...'),
+                self.emphasize_selected_atoms_window),
               M(_('Show bonds on boundary'), self.toggle_show_bonds_pbc,
                 value=self.config.get('show_bonds_pbc', True)),
               M(_('Show _boundary atoms'), self.toggle_show_boundary_atoms,
@@ -740,6 +740,63 @@ class GUI(View, Status):
 
     def attach(self, function, *args, **kwargs):
         self.observers.append((function, args, kwargs))
+
+    def emphasize_selected_atoms_window(self, key=None):
+        win = ui.Window(_('Emphasize selected atoms'), wmtype='utility')
+        win.add(ui.Label(_('Draw unselected atoms as sticks:')))
+
+        unselected_as_sticks = ui.RadioButtons(
+            [_('Yes'), _('No')], values=[True, False])
+        unselected_as_sticks.value = self.config.get(
+            'emphasize_unselected_as_sticks', False)
+        win.add(unselected_as_sticks)
+
+        current_factor = self.config.get('emphasize_lighten_factor', 0.7)
+        factor_slider = None
+
+        def set_factor_from_entry():
+            try:
+                factor = float(factor_entry.value)
+            except ValueError:
+                ui.error(_('Invalid Input'),
+                         _('Please enter a number between 0.0 and 1.0.'))
+                return False
+            if not 0.0 <= factor <= 1.0:
+                ui.error(_('Invalid Input'),
+                         _('Please enter a number between 0.0 and 1.0.'))
+                return False
+            factor_slider.value = int(round(100 * factor))
+            factor_entry.value = f'{factor_slider.value / 100:.2f}'
+            return True
+
+        factor_entry = ui.Entry(f'{current_factor:.2f}', width=6,
+                                callback=set_factor_from_entry)
+        win.add([ui.Label(_('Color-lightening factor for unselected atoms:')),
+                 factor_entry])
+
+        def update_factor_entry(value):
+            factor_entry.value = f'{value / 100:.2f}'
+
+        factor_slider = ui.Scale(
+            int(round(100 * current_factor)), 0, 100, update_factor_entry)
+        win.add(factor_slider)
+
+        def ok_callback():
+            if not set_factor_from_entry():
+                return
+            factor = factor_slider.value / 100
+            self.emphasize_selected_atoms = True
+            self.emphasize_unselected_as_sticks = unselected_as_sticks.value
+            self.emphasize_lighten_factor = factor
+            self.config['emphasize_selected_atoms'] = True
+            self.config['emphasize_unselected_as_sticks'] = (
+                self.emphasize_unselected_as_sticks)
+            self.config['emphasize_lighten_factor'] = factor
+            self.update_drawing_style_menu()
+            self.set_frame()
+            win.close()
+
+        win.add(ui.Button(_('OK'), ok_callback))
 
     def call_observers(self):
         # Use function return value to determine if we keep observer

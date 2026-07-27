@@ -25,6 +25,8 @@ gui_default_settings = {
     'drawing_style': 'ball',
     'bond_cutoff': 1.5,
     'emphasize_selected_atoms': False,
+    'emphasize_unselected_as_sticks': False,
+    'emphasize_lighten_factor': 0.7,
     'shift_cell': False,
     'swap_mouse': False,
 }
