@@ -861,26 +861,38 @@ class View:
 
         selected = self.images.selected
         selected_ordered = self.images.selected_ordered
+        natoms = len(self.atoms)
+        nghosts = len(self.ghost_indices) if hasattr(self, 'ghost_indices') else 0
+
+        def real_atom_index(index):
+            if index < natoms:
+                return index
+            if index < natoms + nghosts:
+                return self.ghost_indices[index - natoms]
+            return None
 
         if event.time < self.t0 + 200:  # 200 ms
             d = self.P - self.xy
             r = self.get_draw_radii()
+            if nghosts > 0:
+                r = np.concatenate([r, r[self.ghost_indices]])
             hit = np.less((d**2).sum(1), (self.scale * r)**2)
             for a in self.indices[::-1]:
-                if a < len(self.atoms) and hit[a]:
+                real_a = real_atom_index(a)
+                if real_a is not None and hit[a]:
                     if event.modifier == 'ctrl':
-                        selected[a] = not selected[a]
-                        if selected[a]:
-                            selected_ordered += [a]
+                        selected[real_a] = not selected[real_a]
+                        if selected[real_a]:
+                            selected_ordered += [real_a]
                         elif len(selected_ordered) > 0:
-                            if selected_ordered[-1] == a:
+                            if selected_ordered[-1] == real_a:
                                 selected_ordered = selected_ordered[:-1]
                             else:
                                 selected_ordered = []
                     else:
                         selected[:] = False
-                        selected[a] = True
-                        selected_ordered = [a]
+                        selected[real_a] = True
+                        selected_ordered = [real_a]
                     break
             else:
                 selected[:] = False
@@ -891,7 +903,13 @@ class View:
             C1 = np.minimum(A, self.xy)
             C2 = np.maximum(A, self.xy)
             hit = np.logical_and(self.P > C1, self.P < C2)
-            indices = np.compress(hit.prod(1), np.arange(len(hit)))
+            drawable_indices = np.compress(hit.prod(1), np.arange(len(hit)))
+            indices = []
+            for index in drawable_indices:
+                real_index = real_atom_index(index)
+                if real_index is not None:
+                    indices.append(real_index)
+            indices = np.unique(indices).astype(int)
             if event.modifier != 'ctrl':
                 selected[:] = False
             selected[indices] = True
@@ -903,7 +921,6 @@ class View:
             self.draw()
 
         # XXX check bounds
-        natoms = len(self.atoms)
         indices = np.arange(natoms)[self.images.selected[:natoms]]
         if len(indices) != len(selected_ordered):
             selected_ordered = []
